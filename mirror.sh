@@ -5,7 +5,7 @@
 #
 # Usage: ./mirror.sh [latest|stable|VERSION] [PLATFORM ...]
 #   PLATFORM: linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl
-#             darwin-x64 darwin-arm64   (default: all six)
+#             darwin-x64 darwin-arm64 win32-x64 win32-arm64 (default: all)
 #
 # Binaries are ~280MB, over GitHub's 100MB per-file limit, so each one is
 # stored as 95MB parts (claude.part-aa, -ab, ...) and reassembled on install.
@@ -17,7 +17,7 @@ CHANNEL="${1:-latest}"
 shift || true
 PLATFORMS=("$@")
 if [ ${#PLATFORMS[@]} -eq 0 ]; then
-    PLATFORMS=(linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64)
+    PLATFORMS=(linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64 win32-x64 win32-arm64)
 fi
 
 DOWNLOAD_BASE_URL="https://downloads.claude.ai/claude-code-releases"
@@ -64,8 +64,9 @@ for platform in "${PLATFORMS[@]}"; do
     echo "  $platform: downloading"
     rm -rf "$pdir"
     mkdir -p "$pdir"
+    binary=$(jq -r ".platforms[\"$platform\"].binary // \"claude\"" "$dest/manifest.json")
     tmp="$pdir/claude.tmp"
-    curl -fSL --progress-bar -o "$tmp" "$DOWNLOAD_BASE_URL/$version/$platform/claude"
+    curl -fSL --progress-bar -o "$tmp" "$DOWNLOAD_BASE_URL/$version/$platform/$binary"
     if [ "$(sha256 "$tmp")" != "$checksum" ]; then
         echo "Checksum verification failed for $platform" >&2
         rm -rf "$pdir"
