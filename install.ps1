@@ -2,7 +2,11 @@
 # with no network access: it uses the binaries mirror.sh stored under
 # releases\ instead of downloads.claude.ai.
 #
-# Usage: .\install.ps1 [latest|stable|VERSION]
+# Usage: powershell -ExecutionPolicy Bypass -File .\install.ps1 [latest|stable|VERSION]
+#
+# Uses only cmdlets and native commands (no .NET calls), so it also runs in
+# Constrained Language Mode. If PowerShell scripts are blocked outright, use
+# install.cmd instead.
 
 param(
     [Parameter(Position=0)]
@@ -13,18 +17,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if (-not [Environment]::Is64BitProcess) {
-    Write-Error "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
-    exit 1
+# PROCESSOR_ARCHITEW6432 is set when 32-bit PowerShell runs on 64-bit Windows.
+$arch = $env:PROCESSOR_ARCHITECTURE
+if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+switch ($arch) {
+    "ARM64" { $platform = "win32-arm64" }
+    "AMD64" { $platform = "win32-x64" }
+    default {
+        Write-Error "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
+        exit 1
+    }
 }
 
 $ReleasesDir = Join-Path $PSScriptRoot "releases"
-
-if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    $platform = "win32-arm64"
-} else {
-    $platform = "win32-x64"
-}
 
 if ($Target -eq "latest" -or $Target -eq "stable") {
     $pointer = Join-Path $ReleasesDir $Target
@@ -56,15 +61,19 @@ New-Item -ItemType Directory -Force -Path $versionsDir, $binDir | Out-Null
 
 $binaryPath = Join-Path $versionsDir $version
 $tmpPath = "$binaryPath.tmp"
-$parts = Get-ChildItem -Path $platformDir -Filter "claude.part-*" | Sort-Object Name
-$out = [System.IO.File]::Create($tmpPath)
+
+# Join the parts with cmd's `copy /b`: fast, and needs no .NET.
+$parts = @(Get-ChildItem -Path $platformDir -Filter "claude.part-*" | Sort-Object Name | ForEach-Object { $_.Name })
+Push-Location $platformDir
 try {
-    foreach ($part in $parts) {
-        $in = [System.IO.File]::OpenRead($part.FullName)
-        try { $in.CopyTo($out) } finally { $in.Dispose() }
-    }
+    & cmd /c copy /b /y ($parts -join "+") $tmpPath | Out-Null
+    $copyExitCode = $LASTEXITCODE
 } finally {
-    $out.Dispose()
+    Pop-Location
+}
+if ($copyExitCode -ne 0) {
+    Write-Error "Could not join the binary parts in $platformDir"
+    exit 1
 }
 
 $actual = (Get-FileHash -Path $tmpPath -Algorithm SHA256).Hash.ToLower()
@@ -90,19 +99,29 @@ New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 if (Test-Path $settingsPath) {
     $settings = Get-Content -Raw $settingsPath | ConvertFrom-Json
 } else {
-    $settings = [pscustomobject]@{}
+    $settings = New-Object -TypeName PSObject
 }
-if (-not ($settings.PSObject.Properties.Name -contains "env")) {
-    $settings | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{})
+if (@($settings.PSObject.Properties | Where-Object { $_.Name -eq "env" }).Count -eq 0) {
+    $settings | Add-Member -NotePropertyName env -NotePropertyValue (New-Object -TypeName PSObject)
 }
 $settings.env | Add-Member -Force -NotePropertyName DISABLE_AUTOUPDATER -NotePropertyValue "1"
 $settings | ConvertTo-Json -Depth 32 | Set-Content -Encoding UTF8 $settingsPath
 
-# Put ~\.local\bin on the user PATH.
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (-not $userPath) { $userPath = "" }
-if (($userPath -split ";") -notcontains $binDir) {
-    [Environment]::SetEnvironmentVariable("Path", (($userPath.TrimEnd(";") + ";" + $binDir).TrimStart(";")), "User")
+# Put ~\.local\bin on the user PATH. Read and write the raw registry value
+# with reg.exe so entries like %USERPROFILE%\... stay unexpanded.
+$userPath = ""
+$query = & reg query "HKCU\Environment" /v Path 2>$null
+foreach ($line in $query) {
+    if ($line -match '^\s+Path\s+REG_\w+\s+(.*)$') { $userPath = $Matches[1] }
+}
+$entries = $userPath -split ";" | Where-Object { $_ -ne "" }
+if (($entries -notcontains $binDir) -and ($entries -notcontains "%USERPROFILE%\.local\bin")) {
+    $newPath = (@($entries) + $binDir) -join ";"
+    & reg add "HKCU\Environment" /v Path /t REG_EXPAND_SZ /d $newPath /f | Out-Null
+    # reg.exe doesn't tell running programs the environment changed; setx
+    # does. Set and remove a throwaway variable so new terminals see PATH.
+    & setx CLAUDE_OFFLINE_PATH_REFRESH 1 | Out-Null
+    & reg delete "HKCU\Environment" /v CLAUDE_OFFLINE_PATH_REFRESH /f 2>$null | Out-Null
     $env:Path = "$env:Path;$binDir"
     Write-Output "Added $binDir to your PATH. Open a new terminal to use it."
 }

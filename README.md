@@ -11,11 +11,51 @@ cd claude-offline
 ./install.sh                 # or: ./install.sh 2.1.306 / ./install.sh stable
 ```
 
-On Windows (PowerShell):
+On Windows, from Command Prompt or PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+`install.ps1` uses no .NET calls, so it also works in Constrained Language
+Mode. If PowerShell scripts are blocked entirely (execution policy enforced by
+Group Policy), use the plain-cmd version instead:
+
+```bat
+install.cmd
+```
+
+If AppLocker or WDAC blocks programs in your user folder, `claude.exe` won't
+start however it's installed; ask IT to allow it (it's signed by Anthropic,
+so a publisher rule works).
+
+<details><summary>Installing by hand, with no scripts at all</summary>
+
+In Command Prompt (use `win32-arm64` on ARM PCs):
+
+```bat
+cd claude-offline\releases\2.1.306\win32-x64
+copy /b claude.part-aa + claude.part-ab + claude.part-ac "%TEMP%\claude.exe"
+certutil -hashfile "%TEMP%\claude.exe" SHA256
+type checksum
+```
+
+If the two hashes match:
+
+```bat
+mkdir "%USERPROFILE%\.local\bin"
+move "%TEMP%\claude.exe" "%USERPROFILE%\.local\bin\claude.exe"
+```
+
+Then add `%USERPROFILE%\.local\bin` to Path under "Edit environment variables
+for your account" (not `setx PATH`, which cuts long values), and put
+`{"env": {"DISABLE_AUTOUPDATER": "1"}}` in `%USERPROFILE%\.claude\settings.json`.
+
+</details>
+
+On Linux/macOS, if `./install.sh` says permission denied, run `bash install.sh`.
+If the repo arrived as a zip downloaded in a browser rather than a `git clone`,
+run `xattr -dr com.apple.quarantine claude-offline` first on macOS.
 
 It picks the binary for your OS/arch (linux x64/arm64, glibc or musl; macOS
 x64/arm64; Windows x64/arm64), checks its SHA-256 against the official manifest, installs it to
